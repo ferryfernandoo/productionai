@@ -5663,39 +5663,60 @@ const ChatBot = ({ onLogout, user, isAuthenticated, isGuest, onNavigate, onUpdat
           let response;
           const apiKey = import.meta.env.VITE_SERPAPI_KEY || "";
           let isDirectFetch = false;
+          let rawData = null;
           
           if (isGuest) {
-            // Try CORS Proxy 1: AllOrigins
+            // Try CORS Proxy 1: AllOrigins (JSON Envelope Mode - 100% CORS-Safe)
             try {
               const serpApiUrl = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(searchQuery)}&api_key=${apiKey}&num=8&hl=id&gl=id`;
-              const proxiedUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(serpApiUrl)}`;
-              console.log('[ChatBot] Mode AI Lokal: Fetching SerpApi via AllOrigins proxy');
+              const proxiedUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(serpApiUrl)}`;
+              console.log('[ChatBot] Mode AI Lokal: Fetching SerpApi via AllOrigins JSON proxy');
               response = await fetch(proxiedUrl);
               if (response && response.ok) {
-                isDirectFetch = true;
+                const envelope = await response.json();
+                if (envelope && envelope.contents) {
+                  rawData = JSON.parse(envelope.contents);
+                  isDirectFetch = true;
+                }
               }
             } catch (e) {
-              console.warn('[ChatBot] AllOrigins proxy failed:', e);
+              console.warn('[ChatBot] AllOrigins JSON proxy failed:', e);
             }
             
-            // Try CORS Proxy 2: corsproxy.io if Proxy 1 failed
-            if (!response || !response.ok) {
+            // Try CORS Proxy 2: corsproxy.io
+            if (!isDirectFetch) {
               try {
                 const serpApiUrl = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(searchQuery)}&api_key=${apiKey}&num=8&hl=id&gl=id`;
-                const proxiedUrl = `https://corsproxy.io/?${encodeURIComponent(serpApiUrl)}`;
+                const proxiedUrl = `https://corsproxy.io/?url=${encodeURIComponent(serpApiUrl)}`;
                 console.log('[ChatBot] Mode AI Lokal: Fetching SerpApi via corsproxy.io');
                 response = await fetch(proxiedUrl);
                 if (response && response.ok) {
+                  rawData = await response.json();
                   isDirectFetch = true;
                 }
               } catch (e) {
                 console.warn('[ChatBot] corsproxy.io failed:', e);
               }
             }
+
+            // Try CORS Proxy 3: Codetabs
+            if (!isDirectFetch) {
+              try {
+                const serpApiUrl = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(searchQuery)}&api_key=${apiKey}&num=8&hl=id&gl=id`;
+                const proxiedUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(serpApiUrl)}`;
+                console.log('[ChatBot] Mode AI Lokal: Fetching SerpApi via Codetabs proxy');
+                response = await fetch(proxiedUrl);
+                if (response && response.ok) {
+                  rawData = await response.json();
+                  isDirectFetch = true;
+                }
+              } catch (e) {
+                console.warn('[ChatBot] Codetabs proxy failed:', e);
+              }
+            }
             
-            // If both direct CORS fetches failed, throw error immediately without hitting backend
-            if (!response || !response.ok) {
-              throw new Error('Pencarian gagal: Koneksi pencarian langsung di Mode AI Lokal terblokir oleh browser (CORS) atau terjadi kendala internet.');
+            if (!isDirectFetch) {
+              throw new Error('Pencarian gagal: Semua proxy CORS front-end diblokir atau gagal. Silakan coba beberapa saat lagi.');
             }
           } else {
             // Authenticated users: hit backend proxy
@@ -5715,11 +5736,12 @@ const ChatBot = ({ onLogout, user, isAuthenticated, isGuest, onNavigate, onUpdat
             }
           }
           
-          if (!response.ok) {
-            throw new Error(`Search API returned ${response.status}`);
+          if (!isDirectFetch) {
+            if (!response.ok) {
+              throw new Error(`Search API returned ${response.status}`);
+            }
+            rawData = await response.json();
           }
-          
-          const rawData = await response.json();
           let searchData;
           
           if (isDirectFetch) {
