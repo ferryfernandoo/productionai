@@ -75,11 +75,89 @@ class ImageGenerationService {
         fetchOptions.signal = abortSignal;
       }
       
-      const response = await fetchWithTimeout(
-        apiUrl,
-        fetchOptions,
-        180000
-      );
+      let response;
+      let usedDirect = false;
+      const isGuestMode = !localStorage.getItem('authUser') || localStorage.getItem('guestSession');
+      
+      if (isGuestMode) {
+        console.log('🔴🔴🔴 [IMAGE_GEN_DEBUG] Guest/Local mode detected. Trying direct TokenMix API first.');
+        try {
+          const directUrl = isEditMode 
+            ? 'https://api.tokenmix.ai/v1/images/edits' 
+            : 'https://api.tokenmix.ai/v1/images/generations';
+            
+          const directKey = import.meta.env.VITE_TOKENMIX_API_KEY || '';
+          
+          if (!directKey) {
+            throw new Error('VITE_TOKENMIX_API_KEY is not defined in environment variables.');
+          }
+
+          // Build headers & body for TokenMix direct call
+          const headers = {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${directKey}`
+          };
+
+          const body = {
+            model: finalModel,
+            prompt: finalPrompt,
+            n: 1,
+            size: size
+          };
+
+          if (isEditMode) {
+            const formData = new FormData();
+            formData.append('model', finalModel);
+            formData.append('prompt', finalPrompt);
+            formData.append('n', '1');
+            formData.append('size', size);
+
+            if (referenceImage.startsWith('data:')) {
+              const res = await fetch(referenceImage);
+              const blob = await res.blob();
+              formData.append('image', blob, 'input.png');
+            } else {
+              formData.append('image', referenceImage);
+            }
+            
+            delete headers['Content-Type'];
+            
+            response = await fetchWithTimeout(directUrl, {
+              method: 'POST',
+              headers,
+              body: formData,
+              ...(abortSignal && { signal: abortSignal })
+            }, 180000);
+          } else {
+            response = await fetchWithTimeout(directUrl, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(body),
+              ...(abortSignal && { signal: abortSignal })
+            }, 180000);
+          }
+
+          if (response && response.ok) {
+            usedDirect = true;
+            console.log('🔴🔴🔴 [IMAGE_GEN_DEBUG] Direct TokenMix API call succeeded.');
+          } else {
+            const errorText = await response.text();
+            console.warn('🔴🔴🔴 [IMAGE_GEN_DEBUG] Direct TokenMix API call failed:', errorText);
+          }
+        } catch (directErr) {
+          console.warn('🔴🔴🔴 [IMAGE_GEN_DEBUG] Direct TokenMix API call error:', directErr);
+        }
+      }
+
+      if (!response || !response.ok) {
+        console.log('🔴🔴🔴 [IMAGE_GEN_DEBUG] Fetching image from backend proxy');
+        response = await fetchWithTimeout(
+          apiUrl,
+          fetchOptions,
+          180000
+        );
+        usedDirect = false;
+      }
 
       console.log('🔴🔴🔴 [IMAGE_GEN_DEBUG] Got response:', response.status, response.statusText);
 
@@ -96,8 +174,26 @@ class ImageGenerationService {
         throw new Error(errorMsg);
       }
 
-      const data = await response.json();
-      console.log('🔴🔴🔴 [IMAGE_GEN_DEBUG] Full response data:', JSON.stringify(data, null, 2));
+      const rawData = await response.json();
+      console.log('🔴🔴🔴 [IMAGE_GEN_DEBUG] Full response data:', JSON.stringify(rawData, null, 2));
+
+      let data;
+      if (usedDirect) {
+        const directImageUrl = rawData.data?.[0]?.url;
+        if (!directImageUrl) {
+          throw new Error('No image URL returned from TokenMix API');
+        }
+        data = {
+          success: true,
+          image: {
+            url: directImageUrl,
+            mode: isEditMode ? 'edit' : 'generate'
+          },
+          reasoning: `Image generated directly on client side using model ${finalModel}.`
+        };
+      } else {
+        data = rawData;
+      }
       
       const imageUrl = data?.image?.url;
       console.log('🔴🔴🔴 [IMAGE_GEN_DEBUG] Extracted imageUrl:', imageUrl);
@@ -292,14 +388,26 @@ class ImageGenerationService {
       console.log('[IMAGE_GEN] 🚀 Generating English prompt from:', originalPrompt.substring(0, 80));
       const prompt = `You are an expert image prompt engineer. Convert the following Indonesian request into a single clear, high-quality English prompt for an advanced image generation model. Do not include any extra explanation or commentary; output only the prompt itself.\n\nIndonesian request: "${originalPrompt}"`;
 
+      const isGuestMode = !localStorage.getItem('authUser') || localStorage.getItem('guestSession');
+      let apiUrl = `${API_BASE_URL}/api/chat`;
+      const headers = {
+        'Content-Type': 'application/json',
+      };
+      
+      if (isGuestMode) {
+        apiUrl = 'https://api.tokenmix.ai/v1/chat/completions';
+        const apiKey = import.meta.env.VITE_TOKENMIX_API_KEY || '';
+        if (apiKey) {
+          headers['Authorization'] = `Bearer ${apiKey}`;
+        }
+      }
+
       const response = await fetchWithTimeout(
-        `${API_BASE_URL}/api/chat`,
+        apiUrl,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          credentials: 'include',
+          headers,
+          credentials: isGuestMode ? undefined : 'include',
           body: JSON.stringify({
             messages: [
               {
@@ -310,6 +418,7 @@ class ImageGenerationService {
             stream: false,
             temperature: 0.2,
             max_tokens: 120,
+            ...(isGuestMode && { model: 'grok-4.1-fast-reasoning' })
           }),
         },
         30000
@@ -368,14 +477,26 @@ Generate a detailed technical explanation in English of how you would process an
 
 Format your response in a professional but accessible way. Make it sound like you're explaining your thinking process step-by-step.`;
 
+      const isGuestMode = !localStorage.getItem('authUser') || localStorage.getItem('guestSession');
+      let apiUrl = `${API_BASE_URL}/api/chat`;
+      const headers = {
+        'Content-Type': 'application/json',
+      };
+      
+      if (isGuestMode) {
+        apiUrl = 'https://api.tokenmix.ai/v1/chat/completions';
+        const apiKey = import.meta.env.VITE_TOKENMIX_API_KEY || '';
+        if (apiKey) {
+          headers['Authorization'] = `Bearer ${apiKey}`;
+        }
+      }
+
       const response = await fetchWithTimeout(
-        `${API_BASE_URL}/api/chat`,
+        apiUrl,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          credentials: 'include',
+          headers,
+          credentials: isGuestMode ? undefined : 'include',
           body: JSON.stringify({
             messages: [
               {
@@ -386,6 +507,7 @@ Format your response in a professional but accessible way. Make it sound like yo
             stream: false,
             temperature: 0.7,
             max_tokens: 800,
+            ...(isGuestMode && { model: 'grok-4.1-fast-reasoning' })
           }),
         },
         30000
