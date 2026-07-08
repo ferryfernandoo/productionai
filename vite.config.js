@@ -7,9 +7,7 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: './index.html'
-    },
-    minify: 'terser',
-    cssMinify: false
+    }
   },
   server: {
     middlewareMode: false,
